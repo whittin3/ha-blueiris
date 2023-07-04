@@ -310,3 +310,13 @@ class BlueIrisApi:
             "button": preset_value
         }
         await self.async_verified_post(request_data)
+
+    async def list_alerts(self, camera_short_name="Index"):
+        _LOGGER.info(f"Listing alerts from {camera_short_name}")
+
+        request_data = {
+            "cmd": "alertlist",
+            "session": self.session_id,
+            "camera": camera_short_name
+        }
+        await self.async_verified_post(request_data)
