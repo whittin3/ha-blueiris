@@ -3,7 +3,7 @@ import hashlib
 import json
 import logging
 import sys
-from typing import Optional
+from typing import Optional, Mapping
 
 import aiohttp
 from aiohttp import ClientSession
@@ -91,6 +91,32 @@ class BlueIrisApi:
                 result = await response.json()
 
                 _LOGGER.debug(f"Full result of {data}: {result}")
+
+                self._last_update = datetime.now()
+
+        except Exception as ex:
+            exc_type, exc_obj, tb = sys.exc_info()
+            line_number = tb.tb_lineno
+
+            _LOGGER.error(
+                f"Failed to connect {self.url}, Error: {ex}, Line: {line_number}"
+            )
+
+        return result
+
+    async def async_get(self, url, params: Optional[Mapping[str, str]]):
+        result = None
+
+        try:
+            async with self.session.get(url, params=params) as response:
+                _LOGGER.debug(f"Status of {self.url}: {response.status}")
+
+                response.raise_for_status()
+
+                # todo: whittin3 - should pass in encoding and read
+                result = await response.json()
+
+                _LOGGER.debug(f"Full result of GET {url}: {result}")
 
                 self._last_update = datetime.now()
 
@@ -320,3 +346,19 @@ class BlueIrisApi:
             "camera": camera_short_name
         }
         await self.async_verified_post(request_data)
+
+    async def stream_clip(self, clip):
+        _LOGGER.info(f"Streaming clip: {clip}")
+        target = self.base_url + "/file/clips/" + clip
+
+        params = {'session': self.session_id,
+                  'speed': 100,
+                  'audio': 0,
+                  'stream': 0,
+                  'q': 35,
+                  'w': 1920,
+                  'h': 1080,
+                  'kbps': 2048,
+                  'extend': 2,
+                  'time': 14951185}
+        await self.async_get(target, params)
