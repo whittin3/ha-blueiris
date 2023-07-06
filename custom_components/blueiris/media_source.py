@@ -1,231 +1,115 @@
-"""Expose Synology DSM as a media source."""
+"""Expose cameras as media sources."""
 from __future__ import annotations
 
-import mimetypes
-
-from aiohttp import web
-from synology_dsm.api.photos import SynoPhotosAlbum, SynoPhotosItem
-from synology_dsm.exceptions import SynologyDSMException
-
-from homeassistant.components import http
-from homeassistant.components.media_player import MediaClass
-from homeassistant.components.media_source import (
-    BrowseError,
+from homeassistant.components.media_player import BrowseError, MediaClass
+from homeassistant.components.media_source.error import Unresolvable
+from homeassistant.components.media_source.models import (
     BrowseMediaSource,
     MediaSource,
     MediaSourceItem,
     PlayMedia,
-    Unresolvable,
 )
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.stream import FORMAT_CONTENT_TYPE, HLS_PROVIDER
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity_component import EntityComponent
 
-from .const import DOMAIN
-from .models import SynologyDSMData
-
-
-async def async_get_media_source(hass: HomeAssistant) -> MediaSource:
-    """Set up Synology media source."""
-    entries = hass.config_entries.async_entries(DOMAIN)
-    hass.http.register_view(SynologyDsmMediaView(hass))
-    return SynologyPhotosMediaSource(hass, entries)
+from . import Camera, _async_stream_endpoint_url
+from .const import DOMAIN, StreamType
 
 
-class SynologyPhotosMediaSourceIdentifier:
-    """Synology Photos item identifier."""
-
-    def __init__(self, identifier: str) -> None:
-        """Split identifier into parts."""
-        parts = identifier.split("/")
-
-        self.unique_id = None
-        self.album_id = None
-        self.cache_key = None
-        self.file_name = None
-
-        if parts:
-            self.unique_id = parts[0]
-            if len(parts) > 1:
-                self.album_id = parts[1]
-            if len(parts) > 2:
-                self.cache_key = parts[2]
-            if len(parts) > 3:
-                self.file_name = parts[3]
+async def async_get_media_source(hass: HomeAssistant) -> CameraMediaSource:
+    """Set up camera media source."""
+    return CameraMediaSource(hass)
 
 
-class SynologyPhotosMediaSource(MediaSource):
-    """Provide Synology Photos as media sources."""
+class CameraMediaSource(MediaSource):
+    """Provide camera feeds as media sources."""
 
-    name = "Synology Photos"
+    name: str = "Camera"
 
-    def __init__(self, hass: HomeAssistant, entries: list[ConfigEntry]) -> None:
-        """Initialize Synology source."""
+    def __init__(self, hass: HomeAssistant) -> None:
+        """Initialize CameraMediaSource."""
         super().__init__(DOMAIN)
         self.hass = hass
-        self.entries = entries
+
+    async def async_resolve_media(self, item: MediaSourceItem) -> PlayMedia:
+        """Resolve media to a url."""
+        component: EntityComponent[Camera] = self.hass.data[DOMAIN]
+        camera = component.get_entity(item.identifier)
+
+        if not camera:
+            raise Unresolvable(f"Could not resolve media item: {item.identifier}")
+
+        if (stream_type := camera.frontend_stream_type) is None:
+            return PlayMedia(
+                f"/api/camera_proxy_stream/{camera.entity_id}", camera.content_type
+            )
+
+        if "stream" not in self.hass.config.components:
+            raise Unresolvable("Stream integration not loaded")
+
+        try:
+            url = await _async_stream_endpoint_url(self.hass, camera, HLS_PROVIDER)
+        except HomeAssistantError as err:
+            # Handle known error
+            if stream_type != StreamType.HLS:
+                raise Unresolvable(
+                    "Camera does not support MJPEG or HLS streaming."
+                ) from err
+            raise Unresolvable(str(err)) from err
+
+        return PlayMedia(url, FORMAT_CONTENT_TYPE[HLS_PROVIDER])
 
     async def async_browse_media(
         self,
         item: MediaSourceItem,
     ) -> BrowseMediaSource:
         """Return media."""
-        if not self.hass.data.get(DOMAIN):
-            raise BrowseError("Diskstation not initialized")
+        if item.identifier:
+            raise BrowseError("Unknown item")
+
+        can_stream_hls = "stream" in self.hass.config.components
+
+        # Root. List cameras.
+        component: EntityComponent[Camera] = self.hass.data[DOMAIN]
+        children = []
+        not_shown = 0
+        for camera in component.entities:
+            stream_type = camera.frontend_stream_type
+
+            if stream_type is None:
+                content_type = camera.content_type
+
+            elif can_stream_hls and stream_type == StreamType.HLS:
+                content_type = FORMAT_CONTENT_TYPE[HLS_PROVIDER]
+
+            else:
+                not_shown += 1
+                continue
+
+            children.append(
+                BrowseMediaSource(
+                    domain=DOMAIN,
+                    identifier=camera.entity_id,
+                    media_class=MediaClass.VIDEO,
+                    media_content_type=content_type,
+                    title=camera.name,
+                    thumbnail=f"/api/camera_proxy/{camera.entity_id}",
+                    can_play=True,
+                    can_expand=False,
+                )
+            )
+
         return BrowseMediaSource(
             domain=DOMAIN,
             identifier=None,
-            media_class=MediaClass.DIRECTORY,
-            media_content_type=MediaClass.IMAGE,
-            title="Synology Photos",
+            media_class=MediaClass.APP,
+            media_content_type="",
+            title="Camera",
             can_play=False,
             can_expand=True,
-            children_media_class=MediaClass.DIRECTORY,
-            children=[
-                *await self._async_build_diskstations(item),
-            ],
+            children_media_class=MediaClass.VIDEO,
+            children=children,
+            not_shown=not_shown,
         )
-
-    async def _async_build_diskstations(
-        self, item: MediaSourceItem
-    ) -> list[BrowseMediaSource]:
-        """Handle browsing different diskstations."""
-        if not item.identifier:
-            ret = []
-            for entry in self.entries:
-                ret.append(
-                    BrowseMediaSource(
-                        domain=DOMAIN,
-                        identifier=entry.unique_id,
-                        media_class=MediaClass.DIRECTORY,
-                        media_content_type=MediaClass.IMAGE,
-                        title=f"{entry.title} - {entry.unique_id}",
-                        can_play=False,
-                        can_expand=True,
-                    )
-                )
-            return ret
-        identifier = SynologyPhotosMediaSourceIdentifier(item.identifier)
-        diskstation: SynologyDSMData = self.hass.data[DOMAIN][identifier.unique_id]
-
-        if identifier.album_id is None:
-            # Get Albums
-            try:
-                albums = await diskstation.api.photos.get_albums()
-            except SynologyDSMException:
-                return []
-
-            ret = [
-                BrowseMediaSource(
-                    domain=DOMAIN,
-                    identifier=f"{item.identifier}/0",
-                    media_class=MediaClass.DIRECTORY,
-                    media_content_type=MediaClass.IMAGE,
-                    title="All images",
-                    can_play=False,
-                    can_expand=True,
-                )
-            ]
-            for album in albums:
-                ret.append(
-                    BrowseMediaSource(
-                        domain=DOMAIN,
-                        identifier=f"{item.identifier}/{album.album_id}",
-                        media_class=MediaClass.DIRECTORY,
-                        media_content_type=MediaClass.IMAGE,
-                        title=album.name,
-                        can_play=False,
-                        can_expand=True,
-                    )
-                )
-
-            return ret
-
-        # Request items of album
-        # Get Items
-        album = SynoPhotosAlbum(int(identifier.album_id), "", 0)
-        try:
-            album_items = await diskstation.api.photos.get_items_from_album(
-                album, 0, 1000
-            )
-        except SynologyDSMException:
-            return []
-
-        ret = []
-        for album_item in album_items:
-            mime_type, _ = mimetypes.guess_type(album_item.file_name)
-            assert isinstance(mime_type, str)
-            if mime_type.startswith("image/"):
-                # Force small small thumbnails
-                album_item.thumbnail_size = "sm"
-                ret.append(
-                    BrowseMediaSource(
-                        domain=DOMAIN,
-                        identifier=f"{identifier.unique_id}/{identifier.album_id}/{album_item.thumbnail_cache_key}/{album_item.file_name}",
-                        media_class=MediaClass.IMAGE,
-                        media_content_type=mime_type,
-                        title=album_item.file_name,
-                        can_play=True,
-                        can_expand=False,
-                        thumbnail=await self.async_get_thumbnail(
-                            album_item, diskstation
-                        ),
-                    )
-                )
-        return ret
-
-    async def async_resolve_media(self, item: MediaSourceItem) -> PlayMedia:
-        """Resolve media to a url."""
-        identifier = SynologyPhotosMediaSourceIdentifier(item.identifier)
-        if identifier.album_id is None:
-            raise Unresolvable("No album id")
-        if identifier.file_name is None:
-            raise Unresolvable("No file name")
-        mime_type, _ = mimetypes.guess_type(identifier.file_name)
-        if not isinstance(mime_type, str):
-            raise Unresolvable("No file extension")
-        return PlayMedia(
-            f"/synology_dsm/{identifier.unique_id}/{identifier.cache_key}/{identifier.file_name}",
-            mime_type,
-        )
-
-    async def async_get_thumbnail(
-        self, item: SynoPhotosItem, diskstation: SynologyDSMData
-    ) -> str | None:
-        """Get thumbnail."""
-        try:
-            thumbnail = await diskstation.api.photos.get_item_thumbnail_url(item)
-        except SynologyDSMException:
-            return None
-        return str(thumbnail)
-
-
-class SynologyDsmMediaView(http.HomeAssistantView):
-    """Synology Media Finder View."""
-
-    url = "/synology_dsm/{source_dir_id}/{location:.*}"
-    name = "synology_dsm"
-
-    def __init__(self, hass: HomeAssistant) -> None:
-        """Initialize the media view."""
-        self.hass = hass
-
-    async def get(
-        self, request: web.Request, source_dir_id: str, location: str
-    ) -> web.Response:
-        """Start a GET request."""
-        if not self.hass.data.get(DOMAIN):
-            raise web.HTTPNotFound()
-        # location: {cache_key}/{filename}
-        cache_key, file_name = location.split("/")
-        image_id = cache_key.split("_")[0]
-        mime_type, _ = mimetypes.guess_type(file_name)
-        if not isinstance(mime_type, str):
-            raise web.HTTPNotFound()
-        diskstation: SynologyDSMData = self.hass.data[DOMAIN][source_dir_id]
-
-        item = SynoPhotosItem(image_id, "", "", "", cache_key, "")
-        try:
-            image = await diskstation.api.photos.download_item(item)
-        except SynologyDSMException as exc:
-            raise web.HTTPNotFound() from exc
-        return web.Response(body=image, content_type=mime_type)
