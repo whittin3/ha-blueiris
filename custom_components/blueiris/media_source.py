@@ -14,19 +14,19 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_component import EntityComponent
 
-from . import Camera, _async_stream_endpoint_url
-from .const import DOMAIN, StreamType
+from .helpers.const import *
+from .models.base_entity import BlueIrisEntity
 
 
-async def async_get_media_source(hass: HomeAssistant) -> CameraMediaSource:
-    """Set up camera media source."""
-    return CameraMediaSource(hass)
+async def async_get_media_source(hass: HomeAssistant) -> BlueIrisMediaSource:
+    """Set up Blue Iris media source."""
+    return BlueIrisMediaSource(hass)
 
 
-class CameraMediaSource(MediaSource):
+class BlueIrisMediaSource(MediaSource):
     """Provide camera feeds as media sources."""
 
-    name: str = "Camera"
+    name: str = "Blue Iris"
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize CameraMediaSource."""
@@ -35,7 +35,7 @@ class CameraMediaSource(MediaSource):
 
     async def async_resolve_media(self, item: MediaSourceItem) -> PlayMedia:
         """Resolve media to a url."""
-        component: EntityComponent[Camera] = self.hass.data[DOMAIN]
+        component: EntityComponent[BlueIrisEntity] = self.hass.data[DOMAIN]
         camera = component.get_entity(item.identifier)
 
         if not camera:
@@ -72,14 +72,14 @@ class CameraMediaSource(MediaSource):
         can_stream_hls = "stream" in self.hass.config.components
 
         # Root. List cameras.
-        component: EntityComponent[Camera] = self.hass.data[DOMAIN]
+        component: EntityComponent[BlueIrisEntity] = self.hass.data[DOMAIN]
         children = []
         not_shown = 0
-        for camera in component.entities:
-            stream_type = camera.frontend_stream_type
-
+        for blue_iris_entity in component.entities:
+            api = blue_iris_entity.api
+            alerts = api.list_alerts()
             if stream_type is None:
-                content_type = camera.content_type
+                content_type = blue_iris_entity.content_type
 
             elif can_stream_hls and stream_type == StreamType.HLS:
                 content_type = FORMAT_CONTENT_TYPE[HLS_PROVIDER]
@@ -91,11 +91,11 @@ class CameraMediaSource(MediaSource):
             children.append(
                 BrowseMediaSource(
                     domain=DOMAIN,
-                    identifier=camera.entity_id,
+                    identifier=blue_iris_entity.entity_id,
                     media_class=MediaClass.VIDEO,
                     media_content_type=content_type,
-                    title=camera.name,
-                    thumbnail=f"/api/camera_proxy/{camera.entity_id}",
+                    title=blue_iris_entity.name,
+                    thumbnail=f"/api/camera_proxy/{blue_iris_entity.entity_id}",
                     can_play=True,
                     can_expand=False,
                 )
@@ -106,7 +106,7 @@ class CameraMediaSource(MediaSource):
             identifier=None,
             media_class=MediaClass.APP,
             media_content_type="",
-            title="Camera",
+            title="Blue Iris",
             can_play=False,
             can_expand=True,
             children_media_class=MediaClass.VIDEO,

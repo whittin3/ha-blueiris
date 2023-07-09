@@ -7,6 +7,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
+from ..api.blue_iris_api import BlueIrisApi
 from ..helpers import get_ha
 from ..helpers.const import *
 from .entity_data import EntityData
@@ -49,7 +50,7 @@ class BlueIrisEntity(Entity):
     ha = None
     entity_manager = None
     device_manager = None
-    api = None
+    api: BlueIrisApi = None
 
     def initialize(
         self,
