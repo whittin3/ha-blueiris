@@ -22,7 +22,6 @@ async def async_setup_base_entry(
     domain: str,
     component: Callable[[HomeAssistant, Any, EntityData], Any],
 ):
-
     """Set up BlueIris based off an entry."""
     _LOGGER.debug(f"Starting async_setup_entry {domain}")
 

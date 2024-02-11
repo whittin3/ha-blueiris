@@ -101,7 +101,7 @@ class ConfigFlowManager:
         return self._data
 
     def _get_default_fields(
-        self, flow, config_data: Optional[ConfigData] = None
+        self, _flow, config_data: Optional[ConfigData] = None
     ) -> dict[Marker, Any]:
         if config_data is None:
             config_data = self.config_data
@@ -237,7 +237,15 @@ class ConfigFlowManager:
 
     async def _update_entry(self):
         try:
-            entry = ConfigEntry(0, "", "", self._data, "", options=self._options)
+            entry = ConfigEntry(
+                version=0,
+                minor_version=0,
+                domain="",
+                title="",
+                data=self._data,
+                source="",
+                options=self._options,
+            )
 
             await self._config_manager.update(entry)
         except InvalidToken:
@@ -245,7 +253,15 @@ class ConfigFlowManager:
 
             del self._data[CONF_PASSWORD]
 
-            entry = ConfigEntry(0, "", "", self._data, "", options=self._options)
+            entry = ConfigEntry(
+                version=0,
+                minor_version=0,
+                domain="",
+                title="",
+                data=self._data,
+                source="",
+                options=self._options,
+            )
 
             await self._config_manager.update(entry)
 
